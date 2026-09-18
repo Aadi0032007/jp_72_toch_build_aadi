@@ -88,16 +88,46 @@ Verified on exactly this:
 
 | | |
 |---|---|
-| Board | Seeed reComputer Super, Jetson Orin NX 16GB (J401 carrier) |
-| JetPack | 7.2 (L4T r39.2) |
-| OS | Ubuntu 24.04 |
-| CUDA | 13.2 |
+| Module | NVIDIA Jetson Orin NX 16GB, P-number `p3767-0000` |
+| Reported board | NVIDIA Jetson Orin NX Engineering Reference Developer Kit |
+| JetPack | 7.2 — L4T **39.2.1** |
+| OS | Ubuntu 24.04 "Noble Numbat" |
+| Kernel | 6.8.12-1021-tegra |
+| CUDA | 13.2.86 |
+| cuDNN | 9.20.0 |
 | Python | 3.12 |
-| GPU arch | sm_87 |
-| PyTorch | torch 2.12.1+cu132, torchvision 0.27.1+cu132 (prerelease) |
+| GPU arch | sm_87 (capability 8.7) |
+| PyTorch | torch 2.14.0+cu132 (prerelease), torchvision from the same index |
 | numpy | 2.2.6 |
 | ROS | ROS 2 Jazzy (system install, outside the Conda env) |
 | LeRobot | 0.6.0 (installed `--no-deps`, see below) |
+| Power mode | 15W (mode 2) |
+
+Those values come from `jetson_release` (jetson-stats 7.2.1) on the machine this
+was built on. "Reported board" is the device-tree name, which reads as the NVIDIA
+reference devkit when the board is flashed with the reference BSP — including on
+third-party carriers. The module P-number is the value to actually match against.
+
+**Power mode matters for benchmarks, not correctness.** 15W is a conservative
+mode; nothing here depends on it, but if throughput looks low, check
+`sudo nvpmodel -q` and consider MAXN before concluding something is wrong with
+the build.
+
+The exact wheel that lands is, for example:
+
+```
+torch-2.14.0+cu132-cp312-cp312-manylinux_2_28_aarch64.whl
+```
+
+Read that filename as the checklist: `cu132` (your CUDA), `cp312` (your Python),
+`aarch64` (your arch), `manylinux_2_28` (glibc ≥ 2.28, which Ubuntu 24.04 is well
+past). If all four match your board, it's the right wheel.
+
+**These are prereleases, so the version moves.** This started at 2.12.1 and is
+now 2.14.0 — the index rolls forward and `--pre` always takes the newest. That's
+fine; the architecture is what matters, not the version. If you need
+reproducibility across boards, pin explicitly (`torch==2.14.0+cu132`) rather
+than letting each install drift to whatever is newest that day.
 
 Other Orin modules (Orin Nano, AGX Orin) are also `sm_87` and will very likely
 work. A different JetPack/CUDA version, or a non-Orin board (Thor is `sm_110`),
@@ -124,9 +154,29 @@ steps live in Seeed's wiki:
 Confirm before continuing:
 
 ```bash
-cat /etc/nv_tegra_release      # expect R39
-nvidia-smi                     # or: ls -d /usr/local/cuda-13.2
+cat /etc/nv_tegra_release      # expect R39 (L4T 39.2.x)
+ls -d /usr/local/cuda-13.2     # the toolkit the wheels must match
+nvcc --version                 # only works once CUDA is on PATH — see Step 0
 ```
+
+`jetson_release` (from `jetson-stats`) gives the whole picture in one shot and is
+worth installing:
+
+```bash
+sudo pip3 install -U jetson-stats
+jetson_release
+```
+
+> **`Jetpack missing!` in that output does not mean JetPack is missing.**
+> `jetson-stats` maps L4T versions to JetPack names from a built-in table, and
+> L4T 39.2.1 is newer than the table it shipped with, so it prints
+> `Jetpack missing!` while correctly reporting L4T 39.2.1, CUDA 13.2.86 and
+> cuDNN 9.20.0 right below. This is a cosmetic lookup gap in the tool, not a
+> problem with your flash — the same "JP7.2 is newer than the tooling" theme as
+> the missing PyTorch wheels. Trust `/etc/nv_tegra_release` instead.
+>
+> Similarly, `jtop: Service: Inactive` just means the daemon isn't running yet:
+> `sudo systemctl restart jtop.service`, then log out and back in.
 
 ### 2. A Conda environment with Python 3.12
 
@@ -166,7 +216,7 @@ auto-updates running. Let them finish, or reboot. **Do not delete the lock file.
 ## How to run it
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/Aadi0032007/jp_72_toch_build_aadi.git
 cd jp_72_toch_build_aadi
 chmod +x install.sh
 ./install.sh
@@ -294,7 +344,8 @@ ros2 run turtlesim turtle_teleop_key     # terminal 2, arrow keys to drive
 
 LeRobot belongs in the *same* environment as torch because it imports torch
 directly. The trap: **LeRobot 0.6.0 pins `torch<2.12.0`**, but the only working
-Orin wheel is the 2.12.1 prerelease. A plain `pip install lerobot` "resolves"
+Orin wheel is a prerelease above that ceiling (2.14.0 at time of writing, and
+climbing). A plain `pip install lerobot` "resolves"
 that by ripping out your cu132 build and installing a generic `torch 2.11.0`
 that fails on the Orin with `no kernel image available`. The version number even
 looks reasonable, so nothing seems wrong until the first kernel launch.
@@ -316,9 +367,15 @@ pip install \
 
 After this, `pip check` will still report torch, torchvision, and setuptools as
 "incompatible" with LeRobot's pins. **That is expected and intended**: the torch
-pins are a soft ceiling you are deliberately overriding (LeRobot 0.6.0 runs fine
-on 2.12.1 in practice), and setuptools is a cosmetic build-tool nag. Everything
-else should be clean.
+pins are a soft ceiling you are deliberately overriding, and setuptools is a
+cosmetic build-tool nag. Everything else should be clean.
+
+LeRobot 0.6.0 ran fine against torch 2.12.1 in practice. The wheel index has
+since rolled to 2.14.0, which is further past the pin, so exercise the paths you
+actually use (`lerobot-info`, a short `lerobot-record`) rather than assuming the
+override is still free. If something does break on a newer torch, pinning back
+to `torch==2.12.1+cu132` from the same index is the fallback — it is still a
+valid `sm_87` build.
 
 **Never use `pip install 'lerobot[extra]'`.** Any bracketed extras form
 (`lerobot[feetech]`, `lerobot[deepdiff-dep]`, …) re-resolves the whole dependency
@@ -411,13 +468,13 @@ installs.
 | Layer | JetPack 6.2 (the old way) | JetPack 7.2 (this repo) |
 |---|---|---|
 | Ubuntu | 22.04 | 24.04 |
-| Kernel | 5.15 | 6.8 |
+| Kernel | 5.15 | 6.8 (`6.8.12-1021-tegra`) |
 | Flashing | Ubuntu host required | ISO / direct image, no host |
 | Python | 3.10 only (3.13 silently pulls CPU torch) | 3.12 |
-| CUDA | 12.6 (not on PATH by default) | 13.2 |
+| CUDA | 12.6 (not on PATH by default) | 13.2.86 (still not on PATH by default) |
 | ROS | Humble (Ubuntu 22 tier 1) | Jazzy (Ubuntu 24 tier 1) |
-| PyTorch | torch 2.5.0, NVIDIA redist wheel only | torch 2.12.1+cu132 (prerelease, `--pre`) |
-| torchvision | 0.20.0, built from source (`MAX_JOBS=2`, arch 8.7) | 0.27.1+cu132 (prerelease wheel) |
+| PyTorch | torch 2.5.0, NVIDIA redist wheel only | torch 2.14.0+cu132 (prerelease, `--pre`) |
+| torchvision | 0.20.0, built from source (`MAX_JOBS=2`, arch 8.7) | matching `+cu132` prerelease wheel, no source build |
 | numpy | pinned 1.26.0 | 2.2.6 |
 | cuSPARSELt | installed by hand | in the CUDA 13 toolkit |
 | libcudss | missing on JP6.2, blocked torch 2.8+ | present / installable |
